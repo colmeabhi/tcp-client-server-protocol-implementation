@@ -2,10 +2,10 @@ import random
 import socket
 import struct
 
-SERVER_HOST = "127.0.0.1"  # ← change to server machine's IP
-SERVER_PORT = 5001
+SERVER_HOST = "6.tcp.us-cal-1.ngrok.io"  # ← change to server machine's IP
+SERVER_PORT = 19359
 MAX_SEQ = 1 << 16  # 2^16 = 65,536
-TOTAL_PKTS = 10_000_000  # total packets to send
+TOTAL_PKTS = 1000  # total packets to send
 WINDOW_SIZE = 256  # sliding window size
 DROP_PROB = 0.01  # 1% drop probability
 RETRANS_INT = 100  # retransmit dropped pkts every N new packets
