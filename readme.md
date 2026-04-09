@@ -1,36 +1,42 @@
-# CS 258 — TCP Sliding Window Protocol
+# TCP Sliding Window Protocol
 
----
+A TCP-based sliding window protocol implementation with simulated packet drops and retransmission.
 
 ## How to Run
 
-**Machine 1 — Server (run first)**
-```bash
-python3 server.py
-```
+### Local Testing (via ngrok)
 
-**Machine 2 — Client**  
-Edit `SERVER_HOST` in `client.py` to the server's IP, then:
-```bash
-python3 client.py
-```
+1. Start ngrok:
+   ```bash
+   ngrok tcp 5001
+   ```
 
-> For local testing, leave `SERVER_HOST = '127.0.0.1'` and run both in separate terminals.
+2. Update `SERVER_HOST` and `SERVER_PORT` in `client.py` with the ngrok forwarding address.
 
----
+3. Run server (terminal 1):
+   ```bash
+   python server.py
+   ```
+
+4. Run client (terminal 2):
+   ```bash
+   python client.py
+   ```
+
+### Remote Testing
+
+Same steps — just run the server + ngrok on one machine and the client on the other.
 
 ## Parameters
 
 | Parameter | Value |
 |-----------|-------|
-| Total packets | 10,000,000 |
-| Max sequence number | 2¹⁶ = 65,536 |
+| Total packets | 1,000 |
+| Max sequence number | 2^16 (65,536) |
 | Window size | 256 |
 | Drop probability | 1% |
 | Retransmit interval | Every 100 packets |
 | Goodput report interval | Every 1,000 packets received |
-
----
 
 ## Protocol Flow
 
@@ -40,19 +46,10 @@ CLIENT                        SERVER
   |<-- "success" -------------|
   |--- [pkt_no, seq_no] ----->|  (8 bytes per packet)
   |<-- [ACK = seq_no + 1] ----|
-  |        ... 10M packets ...|
+  |        ... repeat ...     |
   |--- [DONE_SIG, total] ---->|
 ```
 
----
-
 ## Output (Server)
-```
-  [    1,000 recv / ~    1,010 sent]  goodput = 0.99010
-  [    2,000 recv / ~    2,018 sent]  goodput = 0.99108
-  ...
-  Packets sent by client :   10,098,443
-  Packets received       :    9,999,012
-  Missing packets        :       99,431
-  Average goodput        : 0.990183
-```
+
+Reports unique packets received, missing packets, and average goodput at the end of transmission.
