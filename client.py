@@ -1,22 +1,50 @@
+import logging
 import random
 import socket
 import struct
+import sys
 import time
 from collections import Counter, deque
+from datetime import datetime
 
 from plots import plot_seq_scatter, plot_window
-from protocol import DONE_SIG, MAX_SEQ, PORT, recv_exact, setup_logger
 
 SERVER_HOST = "10.0.0.162"  # change to server's IP or ngrok address
-SERVER_PORT = PORT  # change to match server/ngrok port
+SERVER_PORT = 5001  # change to match server/ngrok port
 TOTAL_PKTS = 10_000_000  # 10 million packets
 WINDOW_SIZE = 256  # sliding window size
 DROP_PROB = 0.01  # 1% drop probability
 RETRANS_INT = 100  # retransmit dropped packets every N sequence numbers
+MAX_SEQ = 1 << 16  # 2^16 = 65,536
+DONE_SIG = 0xFFFFFFFF  # end-of-transmission sentinel
 LOG_PATH = "client_log.txt"
 
 # Plot sampling: keep every Kth drop event (at 1% drop, this is ~0.05% of packets).
 DROP_KEEP_EVERY = 20
+
+
+def recv_exact(sock, n):
+    data = b""
+    while len(data) < n:
+        chunk = sock.recv(n - len(data))
+        if not chunk:
+            raise ConnectionResetError("Connection closed")
+        data += chunk
+    return data
+
+
+def setup_logger(name, path):
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(message)s")
+    for h in (logging.FileHandler(path, mode="a"), logging.StreamHandler(sys.stdout)):
+        h.setFormatter(fmt)
+        logger.addHandler(h)
+    logger.info(f"=== Session started {datetime.now():%Y-%m-%d %H:%M:%S} ===")
+    return logger
+
 
 log = setup_logger("client", LOG_PATH).info
 
