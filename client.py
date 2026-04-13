@@ -1,79 +1,170 @@
 import random
 import socket
 import struct
+import time
+from collections import Counter, deque
 
-SERVER_HOST = "6.tcp.us-cal-1.ngrok.io"  # ← change to server machine's IP
-SERVER_PORT = 19359
-MAX_SEQ = 1 << 16  # 2^16 = 65,536
-TOTAL_PKTS = 1000  # total packets to send
+from plots import plot_seq_scatter, plot_window
+from protocol import DONE_SIG, MAX_SEQ, PORT, recv_exact, setup_logger
+
+SERVER_HOST = "0.0.0.0"  # change to server's IP or ngrok address
+SERVER_PORT = PORT  # change to match server/ngrok port
+TOTAL_PKTS = 10_000_000  # 10 million packets
 WINDOW_SIZE = 256  # sliding window size
 DROP_PROB = 0.01  # 1% drop probability
-RETRANS_INT = 100  # retransmit dropped pkts every N new packets
-DONE_SIG = 0xFFFFFFFF  # end-of-transmission sentinel
+RETRANS_INT = 100  # retransmit dropped packets every N sequence numbers
+LOG_PATH = "client_log.txt"
+
+# Plot sampling: keep every Kth drop event (at 1% drop, this is ~0.05% of packets).
+DROP_KEEP_EVERY = 20
+
+log = setup_logger("client", LOG_PATH).info
+
+
+def print_attempt_distribution(attempts):
+    """Print a table of (transmission count -> number of packets)."""
+    if not attempts:
+        return
+    dist = Counter(attempts.values())
+    total = sum(dist.values())
+    log("")
+    log("[CLIENT] ─── Transmission-count distribution ───")
+    log(f"  {'Transmissions':>13}  {'Packets':>12}  {'Percent':>8}")
+    for n in sorted(dist):
+        pct = 100 * dist[n] / total
+        log(f"  {n:>13}  {dist[n]:>12,}  {pct:>7.3f}%")
+    log("[CLIENT] ──────────────────────────────────────")
 
 
 def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((SERVER_HOST, SERVER_PORT))
-    print(f"[CLIENT] Connected to {SERVER_HOST}:{SERVER_PORT}")
+    log(f"[CLIENT] Connected to {SERVER_HOST}:{SERVER_PORT}")
 
-    # --- Handshake ---
+    # --- Handshake: send "network", expect "success" ---
     init = b"network"
     sock.sendall(struct.pack("!H", len(init)) + init)
 
-    length = struct.unpack("!H", sock.recv(2))[0]
-    reply = sock.recv(length).decode()
-    print(f"[CLIENT] Server replied: '{reply}'")
+    length = struct.unpack("!H", recv_exact(sock, 2))[0]
+    reply = recv_exact(sock, length).decode()
+    log(f"[CLIENT] Server replied: '{reply}'")
     if reply != "success":
-        print("[CLIENT] Handshake failed. Exiting.")
+        log("[CLIENT] Handshake failed. Exiting.")
         return
 
     # --- State ---
-    dropped_queue = []  # pkt_nos that were dropped, queued for retransmit
-    total_sent = 0
-    new_pkt_count = 0  # counts toward next RETRANS_INT trigger
-    base = 0  # sliding window base
+    base = 0  # left edge of the sliding window
+    next_to_send = 0  # next packet number to attempt
+    total_sent = 0  # packets actually transmitted
+    total_attempted = 0  # total attempts (sent + dropped)
+    acked = set()  # packets acked but ahead of base
+    dropped = set()  # packets that were "dropped" (not sent)
+    sent_queue = deque()  # send order — maps ACKs back to pkt_nos
+    pkts_since_retrans = 0  # counts new packets sent since last retransmit
+    last_progress = -1
+    attempts = {}  # pkt_no -> number of send attempts (sent + simulated drops)
 
-    print(f"[CLIENT] Sending {TOTAL_PKTS:,} packets ...\n")
+    # --- Plot samples (client-side only) ---
+    t0 = time.perf_counter()
+    window_times = []       # seconds since t0
+    sender_window = []      # in-flight packets at sample time
+    drop_times = []         # time of each kept drop event
+    drop_pkts = []          # pkt_no of each kept drop event
+    drop_counter = 0
+
+    log(f"[CLIENT] Sending {TOTAL_PKTS:,} packets (window={WINDOW_SIZE})")
 
     # --- Sliding window loop ---
     while base < TOTAL_PKTS:
-        wnd_end = min(base + WINDOW_SIZE, TOTAL_PKTS)
-
-        # Send each packet in the window
-        for pkt_no in range(base, wnd_end):
-            seq_no = pkt_no % MAX_SEQ
-
+        # 1. Fill the window: send new packets while window has room
+        sent_this_round = 0
+        while next_to_send < min(base + WINDOW_SIZE, TOTAL_PKTS):
+            total_attempted += 1
+            pkts_since_retrans += 1
+            attempts[next_to_send] = 1
             if random.random() < DROP_PROB:
-                # Simulate drop — queue for retransmission
-                dropped_queue.append(pkt_no)
+                dropped.add(next_to_send)
+                if drop_counter % DROP_KEEP_EVERY == 0:
+                    drop_times.append(time.perf_counter() - t0)
+                    drop_pkts.append(next_to_send)
+                drop_counter += 1
             else:
-                sock.sendall(struct.pack("!II", pkt_no, seq_no))
-                sock.recv(4)  # receive ACK
+                seq_no = next_to_send % MAX_SEQ
+                sock.sendall(struct.pack("!III", next_to_send, seq_no, total_attempted))
+                sent_queue.append(next_to_send)
                 total_sent += 1
+                sent_this_round += 1
+            next_to_send += 1
 
-            new_pkt_count += 1
+        # 2. Retransmit dropped packets every RETRANS_INT new packets,
+        #    or whenever the window is stuck (no new packets could be sent
+        #    this round) — otherwise we can deadlock when a retransmission
+        #    itself gets dropped.
+        if dropped and (pkts_since_retrans >= RETRANS_INT or sent_this_round == 0):
+            retry_list = sorted(dropped)
+            for dp in retry_list:
+                total_attempted += 1
+                attempts[dp] += 1
+                if random.random() < DROP_PROB:
+                    if drop_counter % DROP_KEEP_EVERY == 0:
+                        drop_times.append(time.perf_counter() - t0)
+                        drop_pkts.append(dp)
+                    drop_counter += 1
+                    continue  # dropped again, stays in dropped set
+                dropped.discard(dp)
+                seq_no = dp % MAX_SEQ
+                sock.sendall(struct.pack("!III", dp, seq_no, total_attempted))
+                sent_queue.append(dp)
+                total_sent += 1
+                sent_this_round += 1
+            pkts_since_retrans = 0
 
-            # Retransmit dropped packets every RETRANS_INT new packets (once only)
-            if new_pkt_count >= RETRANS_INT and dropped_queue:
-                for dp in dropped_queue:
-                    ds = dp % MAX_SEQ
-                    if random.random() >= DROP_PROB:  # 99% succeed
-                        sock.sendall(struct.pack("!II", dp, ds))
-                        sock.recv(4)  # receive ACK
-                        total_sent += 1
-                    # if dropped again — permanently lost, not re-queued
-                dropped_queue = []
-                new_pkt_count = 0
+        # 3. Receive ACKs for all packets sent this round
+        for _ in range(sent_this_round):
+            recv_exact(sock, 4)
+            acked_pkt = sent_queue.popleft()
+            acked.add(acked_pkt)
 
-        # Slide the window forward
-        base = wnd_end
+        # 4. Slide base forward past all consecutively acked packets
+        while base in acked:
+            acked.discard(base)
+            base += 1
 
-    # Signal end of transmission (TOTAL_PKTS = unique packets attempted)
-    sock.sendall(struct.pack("!II", DONE_SIG, TOTAL_PKTS))
+        # Sample sender window size once per round
+        window_times.append(time.perf_counter() - t0)
+        sender_window.append(next_to_send - base)
 
-    print(f"[CLIENT] Done. Total transmissions (incl. retx): {total_sent:,}")
+        # Progress update every 1M packets
+        milestone = base // 1_000_000
+        if milestone > last_progress and base > 0:
+            last_progress = milestone
+            log(
+                f"  [PROGRESS] {base:>12,} / {TOTAL_PKTS:,}  "
+                f"sent={total_sent:,}  pending_drops={len(dropped)}"
+            )
+
+    # --- Signal end of transmission ---
+    sock.sendall(struct.pack("!III", DONE_SIG, TOTAL_PKTS, total_attempted))
+
+    log(f"[CLIENT] Done. Total transmissions (incl. retx): {total_sent:,}")
+    log(f"[CLIENT] Total attempted (sent + dropped): {total_attempted:,}")
+    log(f"[CLIENT] Packets still undelivered: {len(dropped)}")
+    print_attempt_distribution(attempts)
     sock.close()
+
+    plot_window(
+        window_times, sender_window,
+        "plot_sender_window.png",
+        "TCP sender window (in-flight packets) over time",
+        label="Sender window",
+    )
+    plot_seq_scatter(
+        drop_times, drop_pkts,
+        "plot_seq_dropped.png",
+        "TCP sequence numbers dropped over time",
+        color="tab:red",
+    )
+    log("[CLIENT] Saved plots: plot_sender_window.png, plot_seq_dropped.png")
 
 
 if __name__ == "__main__":
