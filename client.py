@@ -7,7 +7,7 @@ from collections import Counter, deque
 from plots import plot_seq_scatter, plot_window
 from protocol import DONE_SIG, MAX_SEQ, PORT, recv_exact, setup_logger
 
-SERVER_HOST = "0.0.0.0"  # change to server's IP or ngrok address
+SERVER_HOST = "10.0.0.162"  # change to server's IP or ngrok address
 SERVER_PORT = PORT  # change to match server/ngrok port
 TOTAL_PKTS = 10_000_000  # 10 million packets
 WINDOW_SIZE = 256  # sliding window size
