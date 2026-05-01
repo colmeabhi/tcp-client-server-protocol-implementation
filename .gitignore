@@ -3,3 +3,12 @@ venv/
 
 # OS
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Generated run artifacts
+*_log.txt
+*_metrics.json
+plot_*.png
