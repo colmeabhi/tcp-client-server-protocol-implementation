@@ -1,0 +1,6 @@
+Forwarding  tcp://0.tcp.ngrok.io:12345 -> localhost:5001
+
+Web Interface                 http://127.0.0.1:4040
+Forwarding                    tcp://6.tcp.us-cal-1.ngrok.io:17490 -> localhost:5001
+
+python client.py --host 6.tcp.us-cal-1.ngrok.io --port 17490
