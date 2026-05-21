@@ -1,11 +1,15 @@
+import logging
 import socket
 import struct
+import sys
 import time
+from datetime import datetime
 
 from plots import plot_seq_scatter, plot_window
-from protocol import DONE_SIG, PORT, recv_exact, setup_logger
 
 HOST = "0.0.0.0"
+PORT = 5001
+DONE_SIG = 0xFFFFFFFF  # end-of-transmission sentinel
 GOODPUT_IN = 1_000  # report goodput every N received packets
 LOG_PATH = "server_log.txt"
 
@@ -13,6 +17,30 @@ LOG_PATH = "server_log.txt"
 # and keep every Kth received packet for the scatter.
 WINDOW_SAMPLE_EVERY = 500
 RECV_KEEP_EVERY = 500
+
+
+def recv_exact(conn, n):
+    data = b""
+    while len(data) < n:
+        chunk = conn.recv(n - len(data))
+        if not chunk:
+            raise ConnectionResetError("Connection closed")
+        data += chunk
+    return data
+
+
+def setup_logger(name, path):
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(message)s")
+    for h in (logging.FileHandler(path, mode="a"), logging.StreamHandler(sys.stdout)):
+        h.setFormatter(fmt)
+        logger.addHandler(h)
+    logger.info(f"=== Session started {datetime.now():%Y-%m-%d %H:%M:%S} ===")
+    return logger
+
 
 log = setup_logger("server", LOG_PATH).info
 
